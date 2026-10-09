@@ -14,6 +14,7 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     if (err.code === "P2002") return res.status(409).json({ error: "That name is already taken" });
     if (err.code === "P2025") return res.status(404).json({ error: "Item not found" });
     if (err.code === "P2003") return res.status(400).json({ error: "A related item does not exist" });
+    if (err.code === "P1010") return res.status(503).json({ error: "The database rejected the connection. Check the deployed DATABASE_URL credentials and database permissions." });
   }
   console.error(err);
   res.status(500).json({ error: "Something went wrong" });

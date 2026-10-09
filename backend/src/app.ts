@@ -8,10 +8,11 @@ export function createApp() {
   const app = express();
 
   app.disable("x-powered-by");
+  app.set("trust proxy", env.trustProxy);
 
   // Allowed frontend origins
   const allowedOrigins = [
-    process.env.FRONTEND_URL,
+    env.frontendUrl,
     "http://localhost:3001",
     "http://127.0.0.1:3001",
   ].filter((origin): origin is string => Boolean(origin));
