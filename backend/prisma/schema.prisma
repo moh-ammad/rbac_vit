@@ -1,0 +1,333 @@
+// LMS data model.
+// Only the Super Admin is seeded. Every other role, class, subject, topic,
+// resource, video, question paper and instruction is created from the UI and
+// stored here.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+enum AccountStatus {
+  PENDING // registered, waiting for a role
+  ACTIVE
+  SUSPENDED
+}
+
+// What kind of person holds the role. Drives "teachers of class X",
+// "students of class X" and who can attempt tests.
+enum RoleAudience {
+  STAFF // principal, office staff, coordinators…
+  TEACHER
+  STUDENT
+}
+
+enum ResourceType {
+  BOOK
+  BLOG
+  NOTES
+  LINK
+}
+
+enum RoleEventAction {
+  CREATED
+  UPDATED
+  PERMISSIONS_CHANGED
+  SCOPE_CHANGED
+  ACTIVATED
+  DEACTIVATED
+  DELETED
+  ASSIGNED
+  UNASSIGNED
+}
+
+// ─── People & access ────────────────────────────────────────────────────────
+
+model User {
+  id        String        @id @default(uuid())
+  email     String        @unique
+  password  String
+  name      String
+  status    AccountStatus @default(PENDING)
+  roleId    String?
+  role      Role?         @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  attempts       TestAttempt[]
+  resources      Resource[]
+  videos         Video[]
+  papers         QuestionPaper[]
+  instructions   Instruction[]
+  roleEventsDone RoleEvent[]    @relation("RoleEventActor")
+  roleEventsGot  RoleEvent[]    @relation("RoleEventTarget")
+
+  @@index([roleId])
+}
+
+model Role {
+  id           String       @id @default(uuid())
+  name         String       @unique
+  slug         String       @unique
+  description  String?
+  audience     RoleAudience @default(STAFF)
+  isSuperAdmin Boolean      @default(false) // only the seeded role; bypasses every check
+  isActive     Boolean      @default(true)
+  allClasses   Boolean      @default(false) // e.g. Principal: every class & subject
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  users        User[]
+  permissions  RolePermission[]
+  classes      RoleClass[]
+  classSubjects RoleClassSubject[]
+  events       RoleEvent[]
+}
+
+// Permission keys come from backend/src/config/permissions.ts (they map to
+// pages/actions that exist in code). Which role holds which key is pure data.
+model RolePermission {
+  roleId     String
+  permission String
+  role       Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permission])
+}
+
+// Scope level 1: the role can see this class.
+// allSubjects = true  → every subject of the class (incl. ones added later)
+// allSubjects = false → only the subjects listed in RoleClassSubject
+model RoleClass {
+  roleId      String
+  classId     String
+  allSubjects Boolean    @default(true)
+  role        Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  classGroup  ClassGroup @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, classId])
+  @@index([classId])
+}
+
+// Scope level 2: a specific subject inside a class.
+model RoleClassSubject {
+  roleId         String
+  classSubjectId String
+  role           Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  classSubject   ClassSubject @relation(fields: [classSubjectId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, classSubjectId])
+  @@index([classSubjectId])
+}
+
+// Full history of everything that happens to roles.
+model RoleEvent {
+  id           String          @id @default(uuid())
+  roleId       String?
+  roleName     String // snapshot, survives role deletion
+  action       RoleEventAction
+  actorId      String?
+  targetUserId String?
+  details      Json?
+  createdAt    DateTime        @default(now())
+  role         Role?           @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  actor        User?           @relation("RoleEventActor", fields: [actorId], references: [id], onDelete: SetNull)
+  targetUser   User?           @relation("RoleEventTarget", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  @@index([roleId])
+  @@index([createdAt])
+}
+
+// ─── School structure ───────────────────────────────────────────────────────
+
+model School {
+  id           String   @id @default(uuid())
+  name         String
+  address      String?
+  phone        String?
+  email        String?
+  website      String?
+  about        String?
+  academicYear String?
+  updatedAt    DateTime @updatedAt
+}
+
+model ClassGroup {
+  id           String         @id @default(uuid())
+  name         String         @unique
+  grade        Int?
+  description  String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  subjects     ClassSubject[]
+  roleClasses  RoleClass[]
+  instructions Instruction[]
+}
+
+model Subject {
+  id          String         @id @default(uuid())
+  name        String         @unique
+  description String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  classLinks  ClassSubject[]
+}
+
+// "Physics in Class 10". Almost all content hangs off this.
+model ClassSubject {
+  id         String             @id @default(uuid())
+  classId    String
+  subjectId  String
+  classGroup ClassGroup         @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject    Subject            @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  topics     Topic[]
+  resources  Resource[]
+  videos     Video[]
+  papers     QuestionPaper[]
+  roleScopes RoleClassSubject[]
+
+  @@unique([classId, subjectId])
+  @@index([subjectId])
+}
+
+// Chapters/topics inside a class subject. Questions and videos are tagged with
+// topics; that is how weak areas are matched to recommended videos.
+model Topic {
+  id             String       @id @default(uuid())
+  name           String
+  classSubjectId String
+  classSubject   ClassSubject @relation(fields: [classSubjectId], references: [id], onDelete: Cascade)
+  resources      Resource[]
+  videos         Video[]
+  questions      Question[]
+
+  @@unique([classSubjectId, name])
+}
+
+// ─── Learning content ───────────────────────────────────────────────────────
+
+model Resource {
+  id             String        @id @default(uuid())
+  title          String
+  description    String?
+  type           ResourceType
+  url            String?
+  content        String? // blog / notes body
+  author         String?
+  classSubjectId String? // null = visible to everyone with resources.view
+  topicId        String?
+  createdById    String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  classSubject   ClassSubject? @relation(fields: [classSubjectId], references: [id], onDelete: Cascade)
+  topic          Topic?        @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  createdBy      User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([type])
+  @@index([classSubjectId])
+}
+
+model Video {
+  id             String       @id @default(uuid())
+  title          String
+  description    String?
+  url            String
+  classSubjectId String
+  topicId        String?
+  createdById    String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  classSubject   ClassSubject @relation(fields: [classSubjectId], references: [id], onDelete: Cascade)
+  topic          Topic?       @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  createdBy      User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([classSubjectId])
+  @@index([topicId])
+}
+
+model Instruction {
+  id          String      @id @default(uuid())
+  title       String
+  body        String
+  classId     String? // null = everyone
+  isPinned    Boolean     @default(false)
+  createdById String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  classGroup  ClassGroup? @relation(fields: [classId], references: [id], onDelete: Cascade)
+  createdBy   User?       @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([classId])
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+model QuestionPaper {
+  id              String        @id @default(uuid())
+  title           String
+  description     String?
+  classSubjectId  String
+  durationMinutes Int?
+  isPublished     Boolean       @default(false)
+  createdById     String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  classSubject    ClassSubject  @relation(fields: [classSubjectId], references: [id], onDelete: Cascade)
+  createdBy       User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  questions       Question[]
+  attempts        TestAttempt[]
+
+  @@index([classSubjectId])
+}
+
+model Question {
+  id           String          @id @default(uuid())
+  paperId      String
+  prompt       String
+  options      Json // string[]
+  correctIndex Int
+  marks        Int             @default(1)
+  explanation  String?
+  topicId      String?
+  order        Int             @default(0)
+  paper        QuestionPaper   @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  topic        Topic?          @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  answers      AttemptAnswer[]
+
+  @@index([paperId, order])
+}
+
+model TestAttempt {
+  id          String          @id @default(uuid())
+  paperId     String
+  userId      String
+  score       Int
+  total       Int
+  percentage  Float
+  startedAt   DateTime?
+  submittedAt DateTime        @default(now())
+  paper       QuestionPaper   @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers     AttemptAnswer[]
+
+  @@index([userId])
+  @@index([paperId])
+}
+
+model AttemptAnswer {
+  id            String      @id @default(uuid())
+  attemptId     String
+  questionId    String
+  selectedIndex Int?
+  isCorrect     Boolean
+  attempt       TestAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question      Question    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, questionId])
+  @@index([questionId])
+}
